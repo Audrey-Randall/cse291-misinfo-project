@@ -2,22 +2,11 @@ import csv
 import os
 import requests
 import json
+import time
 
 # To set your enviornment variables in your terminal run the following line:
 # export 'BEARER_TOKEN'='<your_bearer_token>'
 bearer_token = os.environ.get('TWITTER_BEARER_TOKEN')
-
-def create_url(ids):
-    # User fields are adjustable, options include:
-    # created_at, description, entities, id, location, name,
-    # pinned_tweet_id, profile_image_url, protected,
-    # public_metrics, url, username, verified, and withheld
-    user_fields = "user.fields=created_at,description,entities,id,location,name,pinned_tweet_id,profile_image_url,protected,public_metrics,url,username,verified,withheld"
-    # You can adjust ids to include a single Tweets.
-    # Or you can add to up to 100 comma-separated IDs
-    url = "https://api.twitter.com/2/tweets/retweeted_by/:id?".format(','.join(ids))
-    print(url)
-    return url, user_fields
 
 def bearer_oauth(r):
     """
@@ -26,35 +15,67 @@ def bearer_oauth(r):
 
     r.headers["Authorization"] = 'Bearer '+bearer_token
     r.headers["User-Agent"] = "v2RetweetedByPython"
-    print(r.headers)
     return r
 
 
-def connect_to_endpoint(url, user_fields):
-    response = requests.request("GET", url, auth=bearer_oauth, params=user_fields)
-    print(response.status_code)
-    if response.status_code != 200:
-        raise Exception(
-            "Request returned an error: {} {}".format(
-                response.status_code, response.text
+def connect_to_endpoint(url, params):
+    responses = []
+    next_token = 'init'
+    while next_token:
+        # Handle pagination
+        if next_token != 'init':
+            all_params = '&'.join(params) + '&pagination_token=' + next_token
+        else:
+            all_params = '&'.join(params)
+
+        # Make request
+        response = requests.request("GET", url, auth=bearer_oauth, params=all_params)
+
+        # Handle "too many requests" error
+        if response.status_code == 429:
+            print("{}: Request returned an error (too many requests?) {} Sleeping and continuing.".format(time.now(), response.text))
+            time.sleep(seconds=10)
+            continue
+
+        # Handle all other errors
+        if response.status_code != 200:
+            raise Exception(
+                "Request returned an error: {} {}".format(
+                    response.status_code, response.text
+                )
             )
-        )
-    print(response.json())
+        resp_json = response.json()
+        if 'error' in resp_json:
+            raise Exception(
+                "Error in response: {}".format(resp_json['error'])
+            )
 
-def parse(filename):
-    with open(filename) as f:
+        # Set next pagination token, if necessary. If not, return.
+        try:
+            next_token = resp_json['meta']['next_token']
+        except KeyError:
+            responses.append(resp_json)
+            break
+        responses.append(resp_json)
+    return responses
+
+def parse(input_file, output_file):
+    user_fields = "user.fields=created_at,description,entities,id,location,name,pinned_tweet_id,protected,public_metrics,url,username,verified,withheld"
+    tweet_fields = "tweet.fields=attachments,author_id,context_annotations,conversation_id,created_at,edit_controls,entities,geo,id,in_reply_to_user_id,lang,public_metrics,possibly_sensitive,referenced_tweets,reply_settings,source,text,withheld"
+    outfile = open(output_file, 'w')
+    with open(input_file) as f:
         reader = csv.DictReader(f, delimiter='\t')
-        ids = []
-        for row in reader:
-            if len(ids) >= 2:
-                url, user_fields = create_url(ids)
-                connect_to_endpoint(url, user_fields)
-                ids = []
-                break
-            ids.append(row['tweetId'])
-            
+        for i, row in enumerate(reader):
+            # retweet_url = "https://api.twitter.com/2/tweets/{}/retweeted_by".format(row['tweetId'])
+            tweet_url = "https://api.twitter.com/2/tweets/{}".format(row['tweetId'])
+            # retweet_resp = connect_to_endpoint(retweet_url, [tweet_fields])
+            tweet_resp = connect_to_endpoint(tweet_url, [user_fields, tweet_fields])
+            for t in tweet_resp:
+                for key in row:
+                    t['cn_'+key] = row[key]
+                outfile.write(str(t)+'\n')
+    outfile.close()
 
-
-parse('notes-00000.tsv')
+parse('notes-00000.tsv', 'test.json')
 # ids = ['1377030478167937024','1536848327979016193']
 # print(','.join(ids))
