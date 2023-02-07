@@ -3,6 +3,7 @@ import os
 import requests
 import json
 import time
+from datetime import datetime
 
 # To set your enviornment variables in your terminal run the following line:
 # export 'BEARER_TOKEN'='<your_bearer_token>'
@@ -33,8 +34,8 @@ def connect_to_endpoint(url, params):
 
         # Handle "too many requests" error
         if response.status_code == 429:
-            print("{}: Request returned an error (too many requests?) {} Sleeping and continuing.".format(time.now(), response.text))
-            time.sleep(seconds=10)
+            print("{}: Request returned an error (too many requests?) {} Sleeping and continuing.".format(datetime.now(), response.text))
+            time.sleep(10)
             continue
 
         # Handle all other errors
@@ -66,6 +67,9 @@ def parse(input_file, output_file):
     with open(input_file) as f:
         reader = csv.DictReader(f, delimiter='\t')
         for i, row in enumerate(reader):
+            if i < 14314:
+                continue
+            time.sleep(3)
             # retweet_url = "https://api.twitter.com/2/tweets/{}/retweeted_by".format(row['tweetId'])
             tweet_url = "https://api.twitter.com/2/tweets/{}".format(row['tweetId'])
             # retweet_resp = connect_to_endpoint(retweet_url, [tweet_fields])
