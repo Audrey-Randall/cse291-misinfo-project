@@ -1,3 +1,5 @@
+import warnings
+warnings.filterwarnings("ignore")
 import csv
 import os
 import requests
@@ -5,6 +7,12 @@ import json
 import time
 from datetime import datetime
 import argparse
+from collections import defaultdict
+import numpy as np
+from matplotlib import pyplot as plt
+
+import matplotlib
+matplotlib.use('agg')
 
 # To set your enviornment variables in your terminal run the following line:
 # export 'BEARER_TOKEN'='<your_bearer_token>'
@@ -30,7 +38,7 @@ def make_request(url, all_params):
 
     # Handle all other errors
     if response.status_code != 200:
-        print("Request returned an error: {} {}".format(response.status_code, response.text))
+        print("{}: Request returned an error: {} {}".format(datetime.now(), response.status_code, response.text))
         return None
     return response
 
@@ -98,11 +106,7 @@ def get_retweets(input_file, output_file):
     with open(input_file) as f:
         reader = csv.DictReader(f, delimiter='\t')
         for i, row in enumerate(reader):
-            # if i < 17127:
-            #     continue
-
-            # Get retweets.
-            # Only 75 requests allowed in 15 minutes.
+            # Only 75 retweet requests allowed in 15 minutes.
             # time.sleep(12)
             retweet_url = "https://api.twitter.com/2/tweets/{}/retweeted_by".format(row['tweetId'])
             retweet_resp = connect_to_endpoint(retweet_url, [tweet_fields])
@@ -118,6 +122,46 @@ def get_retweets(input_file, output_file):
             break
     outfile.close()
 
+def filter_helpful(input_file, output_file=None):
+    tweets = defaultdict(lambda: [])
+    with open(input_file) as f:
+        reader = csv.DictReader(f, delimiter='\t')
+        for row in reader:
+            tweets[row['noteId']].append(row['helpfulnessLevel'])
+    
+    num_ratings = [len(tweets[t]) for t in tweets]
+    print('Mean ratings:', np.mean(num_ratings), 'Median ratings', np.median(num_ratings), 'max:', np.max(num_ratings))
+    # Something's wrong with this logic
+    # print('Tweets with 1 rating:', sum([1 if n==1 else 0 for n in num_ratings]))
+    # print('Tweets with 2 ratings:', sum([1 if n==2 else 0 for n in num_ratings]))
+    # print('Tweets with 3 ratings:', sum([1 if n==3 else 0 for n in num_ratings]))
+
+    counts, bins = np.histogram(num_ratings, bins=max(num_ratings))
+    plt.hist(bins[:-1], bins, weights=counts, histtype='step', cumulative=True, density=True)
+    print('Counts:', counts[:10], 'Bins:', bins[:10])
+    plt.xlabel('Number of "helpfulness" votes')
+    plt.ylabel('Number of Community Notes')
+    # plt.yscale('log')
+    plt.xlim(0, 100)
+    plt.savefig('ratings_histogram.png', dpi=300)
+    plt.show()
+
+    # Based on the histogram/CDF, 10 seems like a reasonable starting point, 
+    # that'll mean we only have to make queries for half our data.
+    useful_tweets = []
+    for t in tweets:
+        if len(tweets[t]) < 10:
+            continue
+        num_votes = defaultdict(lambda: 0)
+        for vote in tweets[t]:
+            num_votes[vote] += 1
+        # If a strict majority of the votes are "HELPFUL," consider the Community Note useful.
+        if num_votes['HELPFUL'] > 0.5*len(num_votes):
+            useful_tweets.append(t)
+
+    print(len(useful_tweets))
+    return useful_tweets
+
 if __name__ == "__main__":
     parser = argparse.ArgumentParser()
     parser.add_argument('function')
@@ -127,5 +171,7 @@ if __name__ == "__main__":
         get_tweets('notes-00000.tsv', 'test.json')
     elif args.function == 'retweets':
         get_retweets('notes-00000.tsv', 'retweet_test.json')
+    elif args.function == 'helpful':
+        filter_helpful('ratings-00000.tsv')
     else:
         print('Usage: specify either "tweets" or "retweets"')
