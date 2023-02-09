@@ -10,6 +10,7 @@ import argparse
 from collections import defaultdict
 import numpy as np
 from matplotlib import pyplot as plt
+import ast
 
 import matplotlib
 matplotlib.use('agg')
@@ -51,6 +52,7 @@ def connect_to_endpoint(url, params):
             all_params = '&'.join(params) + '&pagination_token=' + next_token
         else:
             all_params = '&'.join(params)
+            print('Handling pagination with token', next_token)
 
         
         resp = make_request(url, all_params)
@@ -100,41 +102,44 @@ def get_tweets(input_file, output_file):
                 outfile.write(str(t)+'\n')
     outfile.close()
 
-def get_retweets(input_file, output_file):
+def get_retweets(input_file, output_file, useful_note_ids):
     tweet_fields = "tweet.fields=attachments,author_id,context_annotations,conversation_id,created_at,edit_controls,entities,geo,id,in_reply_to_user_id,lang,public_metrics,possibly_sensitive,referenced_tweets,reply_settings,source,text,withheld"
     outfile = open(output_file, 'w')
+    num_useful = 0
     with open(input_file) as f:
-        reader = csv.DictReader(f, delimiter='\t')
-        for i, row in enumerate(reader):
+        for line in f:
+            row = ast.literal_eval(line)
+            # Skip unhelpful notes or notes with too few ratings
+            if row['cn_noteId'] not in useful_note_ids:
+                continue
+            num_useful +=1
             # Only 75 retweet requests allowed in 15 minutes.
-            # time.sleep(12)
-            retweet_url = "https://api.twitter.com/2/tweets/{}/retweeted_by".format(row['tweetId'])
+            time.sleep(12)
+            retweet_url = "https://api.twitter.com/2/tweets/{}/retweeted_by".format(row['data']['id'])
             retweet_resp = connect_to_endpoint(retweet_url, [tweet_fields])
 
             # Get replies (the conversation).
-            converation_url = 'https://api.twitter.com/2/tweets/search/recent?query=conversation_id:{}'.format(row['tweetId'])
+            converation_url = 'https://api.twitter.com/2/tweets/search/recent?query=conversation_id:{}'.format(row['data']['id'])
             conversation_resp = connect_to_endpoint(retweet_url, [tweet_fields])
 
-            for t in retweet_resp:
-                # for key in row:
-                #     t['cn_'+key] = row[key]
-                outfile.write(str(t)+'\n')
+            print(retweet_resp, '\n***********\n\n\n', conversation_resp)
             break
+    print(num_useful)
     outfile.close()
 
-def filter_helpful(input_file, output_file=None):
+def get_helpfulness_ratings(input_file):
     tweets = defaultdict(lambda: [])
     with open(input_file) as f:
         reader = csv.DictReader(f, delimiter='\t')
         for row in reader:
             tweets[row['noteId']].append(row['helpfulnessLevel'])
-    
+    return tweets
+
+# Get some stats and plot the histogram of how many "helpfulness" votes each CN has.
+def analyze_helpfulness(input_file):
+    tweets = get_helpfulness_ratings(input_file)
     num_ratings = [len(tweets[t]) for t in tweets]
     print('Mean ratings:', np.mean(num_ratings), 'Median ratings', np.median(num_ratings), 'max:', np.max(num_ratings))
-    # Something's wrong with this logic
-    # print('Tweets with 1 rating:', sum([1 if n==1 else 0 for n in num_ratings]))
-    # print('Tweets with 2 ratings:', sum([1 if n==2 else 0 for n in num_ratings]))
-    # print('Tweets with 3 ratings:', sum([1 if n==3 else 0 for n in num_ratings]))
 
     counts, bins = np.histogram(num_ratings, bins=max(num_ratings))
     plt.hist(bins[:-1], bins, weights=counts, histtype='step', cumulative=True, density=True)
@@ -144,22 +149,27 @@ def filter_helpful(input_file, output_file=None):
     # plt.yscale('log')
     plt.xlim(0, 100)
     plt.savefig('ratings_histogram.png', dpi=300)
-    plt.show()
+    plt.show()    
 
+def filter_helpful(input_file):
     # Based on the histogram/CDF, 10 seems like a reasonable starting point, 
     # that'll mean we only have to make queries for half our data.
+    num_votes_threshold = 10
+    tweets = get_helpfulness_ratings(input_file)
     useful_tweets = []
+
     for t in tweets:
-        if len(tweets[t]) < 10:
+        if len(tweets[t]) < num_votes_threshold:
             continue
         num_votes = defaultdict(lambda: 0)
         for vote in tweets[t]:
             num_votes[vote] += 1
+        
         # If a strict majority of the votes are "HELPFUL," consider the Community Note useful.
         if num_votes['HELPFUL'] > 0.5*len(num_votes):
             useful_tweets.append(t)
 
-    print(len(useful_tweets))
+    print('Number of useful tweets:', len(useful_tweets))
     return useful_tweets
 
 if __name__ == "__main__":
@@ -170,8 +180,9 @@ if __name__ == "__main__":
     if args.function == 'tweets':
         get_tweets('notes-00000.tsv', 'test.json')
     elif args.function == 'retweets':
-        get_retweets('notes-00000.tsv', 'retweet_test.json')
-    elif args.function == 'helpful':
-        filter_helpful('ratings-00000.tsv')
+        useful_note_ids = filter_helpful('ratings-00000.tsv')
+        get_retweets('all_tweet_data.json', 'retweet_test.json', useful_note_ids)
+    elif args.function == 'analyze_helpfulness':
+        analyze_helpfulness('ratings-00000.tsv')
     else:
         print('Usage: specify either "tweets" or "retweets"')
