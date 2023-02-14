@@ -16,7 +16,7 @@ import matplotlib
 matplotlib.use('agg')
 
 # To set your enviornment variables in your terminal run the following line:
-# export 'BEARER_TOKEN'='<your_bearer_token>'
+# export 'TWITTER_BEARER_TOKEN'='<your_bearer_token>'
 bearer_token = os.environ.get('TWITTER_BEARER_TOKEN')
 
 def bearer_oauth(r):
@@ -43,22 +43,23 @@ def make_request(url, all_params):
         return None
     return response
 
-def connect_to_endpoint(url, params):
+def connect_to_endpoint(url, params, output_file, tweet_id):
     responses = []
     next_token = 'init'
+    f = open(output_file, 'w')
     while next_token:
         # Handle pagination
         if next_token != 'init':
             all_params = '&'.join(params) + '&pagination_token=' + next_token
+            print('Handling pagination with token', next_token)
+            time.sleep(12)
         else:
             all_params = '&'.join(params)
             print('Handling pagination with token', next_token)
 
-        
         resp = make_request(url, all_params)
         if resp is None:
-            print("Sleep 10 and retry request once...")
-            time.sleep(10)
+            print("Retry request once...")
             resp = make_request(url, all_params)
             if resp is None:
                 print("Request failed twice, moving on.")
@@ -76,7 +77,10 @@ def connect_to_endpoint(url, params):
         except KeyError:
             responses.append(resp_json)
             break
+        resp_json['cn_tweetId'] = tweet_id
+        f.write(json.dumps(resp_json)+'\n')
         responses.append(resp_json)
+    f.close()
     return responses
 
 def get_conversation(conversation_id):
@@ -102,29 +106,23 @@ def get_tweets(input_file, output_file):
                 outfile.write(str(t)+'\n')
     outfile.close()
 
-def get_retweets(input_file, output_file, useful_note_ids):
+def get_retweets(input_file, output_file):
     tweet_fields = "tweet.fields=attachments,author_id,context_annotations,conversation_id,created_at,edit_controls,entities,geo,id,in_reply_to_user_id,lang,public_metrics,possibly_sensitive,referenced_tweets,reply_settings,source,text,withheld"
     outfile = open(output_file, 'w')
-    num_useful = 0
+    seen_ids = set([])
     with open(input_file) as f:
         for line in f:
-            row = ast.literal_eval(line)
-            # Skip unhelpful notes or notes with too few ratings
-            if row['cn_noteId'] not in useful_note_ids:
-                continue
-            num_useful +=1
+            row = json.loads(line)
+            tweet_id = row['cn_tweetId']
             # Only 75 retweet requests allowed in 15 minutes.
             time.sleep(12)
-            retweet_url = "https://api.twitter.com/2/tweets/{}/retweeted_by".format(row['data']['id'])
-            retweet_resp = connect_to_endpoint(retweet_url, [tweet_fields])
-
-            # Get replies (the conversation).
-            converation_url = 'https://api.twitter.com/2/tweets/search/recent?query=conversation_id:{}'.format(row['data']['id'])
-            conversation_resp = connect_to_endpoint(retweet_url, [tweet_fields])
-
-            print(retweet_resp, '\n***********\n\n\n', conversation_resp)
-            break
-    print(num_useful)
+            # Some tweets have multiple notes, don't request retweets for the same tweet multiple times
+            if tweet_id in seen_ids:
+                continue
+            seen_ids.add(tweet_id)
+            retweet_url = "https://api.twitter.com/2/tweets/{}/retweeted_by".format(tweet_id)
+            connect_to_endpoint(retweet_url, [tweet_fields], output_file, tweet_id)
+            
     outfile.close()
 
 def get_helpfulness_ratings(input_file):
@@ -172,6 +170,23 @@ def filter_helpful(input_file):
     print('Number of useful tweets:', len(useful_tweets))
     return useful_tweets
 
+def sort_by_num_retweets(input_file, output_file, useful_note_ids):
+    with open(input_file) as f:
+        lines = []
+        for line in f:
+            row = ast.literal_eval(line)
+            # Skip unhelpful notes or notes with too few ratings
+            if row['cn_noteId'] not in useful_note_ids:
+                continue
+            lines.append(row)
+    # Sort lines (list of dicts) by [data][public_metrics][retweet_count].
+    # Retweets are not the same as quote tweets but retweets probably imply
+    # agreement because they have no extra context added.
+    f = open(output_file, 'w')
+    for line in sorted(lines, key=(lambda x: x['data']['public_metrics']['retweet_count'] if 'data' in x else 0), reverse=True):
+        f.write(json.dumps(line)+'\n')
+    f.close()
+
 if __name__ == "__main__":
     parser = argparse.ArgumentParser()
     parser.add_argument('function')
@@ -180,9 +195,11 @@ if __name__ == "__main__":
     if args.function == 'tweets':
         get_tweets('notes-00000.tsv', 'test.json')
     elif args.function == 'retweets':
-        useful_note_ids = filter_helpful('ratings-00000.tsv')
-        get_retweets('all_tweet_data.json', 'retweet_test.json', useful_note_ids)
+        get_retweets('all_helpful_data_sorted.json', 'retweet_data.json')
     elif args.function == 'analyze_helpfulness':
         analyze_helpfulness('ratings-00000.tsv')
+    elif args.function == 'filter':
+        useful_note_ids = filter_helpful('ratings-00000.tsv')
+        sort_by_num_retweets('all_tweet_data.json', 'all_helpful_data_sorted.json', useful_note_ids)
     else:
         print('Usage: specify either "tweets" or "retweets"')
